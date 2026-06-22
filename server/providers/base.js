@@ -78,66 +78,109 @@ export class BaseAIProvider {
 
   /**
    * 流式对话 - 统一的SSE流式解析
+   * 支持动态超时：只在一定时间内没有收到新数据时才超时
    */
   async chatStream({ model, messages, temperature, maxTokens, apiKey, onChunk, signal }) {
     const body = this.buildBody({ model, messages, temperature, maxTokens, stream: true })
 
-    const response = await this._fetchWithRetry(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: this.getHeaders(apiKey),
-      body: JSON.stringify(body),
-      signal
-    })
+    // 创建 AbortController，支持动态超时和外部取消
+    const controller = new AbortController()
+    const externalSignal = signal
 
-    if (!response.ok) {
-      const err = await response.text()
-      throw new ProviderError(this.name, response.status, err)
+    // 外部信号关联
+    if (externalSignal) {
+      externalSignal.addEventListener('abort', () => controller.abort())
     }
 
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let fullContent = ''
-    let usage = null
+    // 动态超时配置：从收到最后一个 chunk 开始计时
+    const idleTimeout = parseInt(process.env.STREAM_IDLE_TIMEOUT || '30000') // 默认 30 秒无数据超时
+    const totalTimeout = parseInt(process.env.REQUEST_TIMEOUT || '600000') // 总超时限制（10分钟）
+    let lastChunkTime = Date.now()
+    let startTime = Date.now()
+    let idleTimer = null
+    let totalTimer = null
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    // 启动空闲超时定时器
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => {
+        controller.abort(new Error(`流式传输空闲超时：${idleTimeout}ms 内未收到新数据`))
+      }, idleTimeout)
+    }
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop()
+    // 启动总超时定时器
+    totalTimer = setTimeout(() => {
+      controller.abort(new Error(`流式传输总超时：${totalTimeout}ms`))
+    }, totalTimeout)
 
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || !trimmed.startsWith('data: ')) continue
+    resetIdleTimer()
 
-        const jsonStr = trimmed.slice(6)
-        if (jsonStr === '[DONE]') continue
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: this.getHeaders(apiKey),
+        body: JSON.stringify(body),
+        signal: controller.signal
+      })
 
-        try {
-          const data = JSON.parse(jsonStr)
-          const parsed = this.parseStreamChunk(data)
+      if (!response.ok) {
+        const err = await response.text()
+        throw new ProviderError(this.name, response.status, err)
+      }
 
-          if (parsed.error) {
-            throw new ProviderError(this.name, 500, parsed.error)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let fullContent = ''
+      let usage = null
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        // 收到数据，重置空闲定时器
+        lastChunkTime = Date.now()
+        resetIdleTimer()
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed || !trimmed.startsWith('data: ')) continue
+
+          const jsonStr = trimmed.slice(6)
+          if (jsonStr === '[DONE]') continue
+
+          try {
+            const data = JSON.parse(jsonStr)
+            const parsed = this.parseStreamChunk(data)
+
+            if (parsed.error) {
+              throw new ProviderError(this.name, 500, parsed.error)
+            }
+
+            if (parsed.content) {
+              fullContent += parsed.content
+              onChunk?.({ content: parsed.content, fullContent })
+            }
+
+            if (parsed.usage) usage = parsed.usage
+            if (parsed.done) return { content: fullContent, usage }
+          } catch (e) {
+            if (e instanceof ProviderError) throw e
+            // 跳过格式错误的行
           }
-
-          if (parsed.content) {
-            fullContent += parsed.content
-            onChunk?.({ content: parsed.content, fullContent })
-          }
-
-          if (parsed.usage) usage = parsed.usage
-          if (parsed.done) return { content: fullContent, usage }
-        } catch (e) {
-          if (e instanceof ProviderError) throw e
-          // 跳过格式错误的行
         }
       }
-    }
 
-    return { content: fullContent, usage }
+      return { content: fullContent, usage }
+    } finally {
+      // 清理定时器
+      if (idleTimer) clearTimeout(idleTimer)
+      if (totalTimer) clearTimeout(totalTimer)
+    }
   }
 
   /**

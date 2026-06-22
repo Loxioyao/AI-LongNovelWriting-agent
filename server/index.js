@@ -424,6 +424,19 @@ app.post('/api/workflows/:projectId/retry', async (req, res) => {
   }
 })
 
+// 同步章节进度
+app.post('/api/workflows/:projectId/sync-progress', (req, res) => {
+  const { currentChapterIndex, phase } = req.body
+  const wf = WorkflowRepo.getByProject(req.params.projectId)
+  if (wf) {
+    WorkflowRepo.update(wf.id, {
+      currentChapterIndex,
+      phase
+    })
+  }
+  res.json({ success: true })
+})
+
 // 对话历史
 app.get('/api/projects/:id/history', (req, res) => {
   res.json({ history: AgentHistoryRepo.getAll(req.params.id) })

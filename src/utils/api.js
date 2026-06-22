@@ -254,7 +254,8 @@ export const workflowApi = {
   cancel: (projectId) => api.post(`/workflows/${projectId}/cancel`),
   rollback: (projectId, stepIndex) => api.post(`/workflows/${projectId}/rollback`, { stepIndex }),
   confirm: (projectId) => api.post(`/workflows/${projectId}/confirm`),
-  retry: (projectId, options) => api.post(`/workflows/${projectId}/retry`, options)
+  retry: (projectId, options) => api.post(`/workflows/${projectId}/retry`, options),
+  syncProgress: (projectId, currentChapterIndex, phase) => api.post(`/workflows/${projectId}/sync-progress`, { currentChapterIndex, phase })
 }
 
 // 历史API

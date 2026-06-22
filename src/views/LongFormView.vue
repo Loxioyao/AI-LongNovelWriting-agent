@@ -334,7 +334,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { marked } from 'marked'
@@ -342,6 +342,7 @@ import DOMPurify from 'dompurify'
 import { useProjectStore } from '@/stores/project'
 import { useSettingsStore } from '@/stores/settings'
 import { useLongFormStore } from '@/stores/longform'
+import { workflowApi } from '@/utils/api'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -485,6 +486,12 @@ async function executeCurrentStep() {
     if (workflowState.value.currentStep >= fullSteps.value.length) {
       workflowState.value.phase = 'writing'
       ElMessage.success('规划阶段完成！可以开始逐章生成')
+      // 同步进度到后端
+      try {
+        await workflowApi.syncProgress(projectId, 0, 'writing')
+      } catch (e) {
+        console.warn('同步进度失败:', e)
+      }
     }
   } catch (error) {
     ElMessage.error(error.message || '执行失败')
@@ -548,6 +555,9 @@ async function executeChapterGen() {
     return
   }
 
+  // 确保后端工作流已初始化
+  await lf.initBackendWorkflow(projectId)
+
   const idx = workflowState.value.currentChapterIndex
   const ch = project.value?.chapters[idx]
 
@@ -600,6 +610,20 @@ async function executeChapterGen() {
 
     if (allDone) {
       ElMessage.success(`第${idx + 1}章「${ch.title}」生成完成！`)
+      // 自动推进到下一章
+      workflowState.value.currentChapterIndex++
+      if (workflowState.value.currentChapterIndex >= project.value.chapters.length) {
+        workflowState.value.phase = 'done'
+        ElMessage.success('全部章节生成完成！')
+      } else {
+        ElMessage.info(`进入第${workflowState.value.currentChapterIndex + 1}章`)
+      }
+      // 同步进度到后端
+      try {
+        await workflowApi.syncProgress(projectId, workflowState.value.currentChapterIndex, workflowState.value.phase)
+      } catch (e) {
+        console.warn('同步进度失败:', e)
+      }
     }
   } catch (error) {
     ElMessage.error(error.message || '生成失败')
@@ -620,6 +644,9 @@ async function runAutoChapters() {
     '自动生成全部章节',
     { type: 'info', confirmButtonText: '开始', cancelButtonText: '取消' }
   ).then(async () => {
+    // 确保后端工作流已初始化
+    await lf.initBackendWorkflow(projectId)
+
     workflowState.value.autoMode = true
     workflowState.value.phase = 'writing'
 
@@ -717,6 +744,32 @@ function updateRounds(val) {
   lf.setMaxReviewRounds(val)
 }
 
+// 从后端加载工作流状态
+async function loadWorkflowState() {
+  try {
+    const response = await workflowApi.get(projectId)
+    if (response.workflow) {
+      const wf = response.workflow
+      // 同步后端状态到前端
+      lf.workflowState.phase = wf.phase || 'idle'
+      lf.workflowState.currentStep = wf.current_step || 0
+      lf.workflowState.currentChapterIndex = wf.current_chapter_index || 0
+      lf.workflowState.maxReviewRounds = wf.max_review_rounds || 2
+      // 同步结果
+      lf.workflowState.results = wf.results || {}
+      lf.workflowState.chapterResults = wf.chapterResults || []
+      lf.workflowState.logs = wf.logs || []
+      maxRounds.value = wf.max_review_rounds || 2
+      if (wf.logs?.length > 0) {
+        ElMessage.info(`已恢复进度，当前阶段：${wf.phase === 'writing' ? '逐章生成' : wf.phase}`)
+      }
+    }
+  } catch (e) {
+    // 工作流未初始化，这是正常的
+    console.log('暂无工作流状态')
+  }
+}
+
 function cancelCurrent() {
   lf.cancelExecution()
   executing.value = false
@@ -756,6 +809,11 @@ watch(() => workflowState.value.results, () => {
     }
   }
 }, { deep: true })
+
+// 组件挂载时加载工作流状态
+onMounted(() => {
+  loadWorkflowState()
+})
 </script>
 
 <style scoped>
