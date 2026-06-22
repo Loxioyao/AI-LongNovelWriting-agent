@@ -133,14 +133,15 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
 import { exportAsTxt, exportAsMarkdown, exportAsZip } from '@/utils/export'
 
 const router = useRouter()
 const projectStore = useProjectStore()
+const { projects } = storeToRefs(projectStore)
 
-const projects = projectStore.projects
 const showCreateDialog = ref(false)
 
 const newProject = reactive({
@@ -209,15 +210,15 @@ function exportProject(project) {
 }
 
 window.__exportTxt = (id) => {
-  const p = projectStore.projects.find(p => p.id === id)
+  const p = projects.value.find(p => p.id === id)
   if (p) exportAsTxt(p)
 }
 window.__exportMd = (id) => {
-  const p = projectStore.projects.find(p => p.id === id)
+  const p = projects.value.find(p => p.id === id)
   if (p) exportAsMarkdown(p)
 }
 window.__exportZip = async (id) => {
-  const p = projectStore.projects.find(p => p.id === id)
+  const p = projects.value.find(p => p.id === id)
   if (p) {
     await exportAsZip(p)
     ElMessage.success('ZIP导出成功')
